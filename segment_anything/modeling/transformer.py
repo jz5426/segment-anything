@@ -54,6 +54,7 @@ class TwoWayTransformer(nn.Module):
                 )
             )
 
+        # this the final attention part in figure 14 in the paper
         self.final_attn_token_to_image = Attention(
             embedding_dim, num_heads, downsample_rate=attention_downsample_rate
         )

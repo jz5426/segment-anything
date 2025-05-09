@@ -96,21 +96,26 @@ class Sam(nn.Module):
         """
         # preprocess each image in the batch and stack them
         input_images = torch.stack([self.preprocess(x["image"]) for x in batched_input], dim=0)
-        image_embeddings = self.image_encoder(input_images)
+        image_embeddings = self.image_encoder(input_images) # a batch of imag embeddings
 
         outputs = []
         for image_record, curr_embedding in zip(batched_input, image_embeddings):
+            # each image embedding has a batch of prompt
+            # NOTE: each image is seperately handled after the image encoder
+            # which might be the reason for the lightweight decoder design.
+            # checkout SamAutomaticMaskGenerator for the details on how they process point_coords and point_labels 
             if "point_coords" in image_record:
                 points = (image_record["point_coords"], image_record["point_labels"])
             else:
                 points = None
+
             sparse_embeddings, dense_embeddings = self.prompt_encoder(
                 points=points,
                 boxes=image_record.get("boxes", None),
                 masks=image_record.get("mask_inputs", None),
             )
             low_res_masks, iou_predictions = self.mask_decoder(
-                image_embeddings=curr_embedding.unsqueeze(0),
+                image_embeddings=curr_embedding.unsqueeze(0),# recover back the batch dimension
                 image_pe=self.prompt_encoder.get_dense_pe(),
                 sparse_prompt_embeddings=sparse_embeddings,
                 dense_prompt_embeddings=dense_embeddings,

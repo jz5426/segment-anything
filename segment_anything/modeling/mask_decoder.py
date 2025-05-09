@@ -118,24 +118,45 @@ class MaskDecoder(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Predicts masks. See 'forward' for more details."""
         # Concatenate output tokens
+
+        #### NOTE: START if handle the input with proper prompt embedding handled correctly in the adapter, the self.transformer should just follows
+
+        # the first token is the iou token, the rest are the mask tokens in order. (n+1, d), n is number of mask tokens, one for each predictions
         output_tokens = torch.cat([self.iou_token.weight, self.mask_tokens.weight], dim=0)
+
+        # create a batch dimension for the output tokens
+        # sparse_embeddings = torch.empty((bs, k, self.embed_dim), device=self._get_device()) from the PromptEncoder class, where k is number of sparse prompts
+        # the output tokens are broadcasts to each image in the batch
+        # (1, n+1, d) => (bs, n+1, d) repeat the prompt set across the batch dimension
         output_tokens = output_tokens.unsqueeze(0).expand(sparse_prompt_embeddings.size(0), -1, -1)
+
+        # refer to figure 14 in the paper, this is the input to the lightweight decoder transformer
+        # after concatenation, the output becomes (bs, n+1+k, d), where k is the number of sparse prompts
+        # implis that each image in the batch has n+1+k tokens (mask tokens + iou token + sparse prompts)
         tokens = torch.cat((output_tokens, sparse_prompt_embeddings), dim=1)
 
         # Expand per-image data in batch direction to be per-mask
+        # each image in a batch has different prompt set, so the following essential handles that
+        # ex, if there are two images in the batch, and each image has 3 sparse prompts, then the output is (2, 3, d) => (2*3, d) = (6, d)
         src = torch.repeat_interleave(image_embeddings, tokens.shape[0], dim=0)
-        src = src + dense_prompt_embeddings
+
+        src = src + dense_prompt_embeddings # refer to figure 4 in the paper where the dense mask is handled differently compared to the sparse prompts
+        # note that image_pe is of shape 1x(embed_dim)x(embedding_h)x(embedding_w)
         pos_src = torch.repeat_interleave(image_pe, tokens.shape[0], dim=0)
         b, c, h, w = src.shape
 
-        # Run the transformer
+        #### NOTE: END if handle the input with proper prompt embedding handled correctly in the adapter, the self.transformer should just follows
+
+        # Run the transformer NOTE: this is the lightweight decoder transformer
         hs, src = self.transformer(src, pos_src, tokens)
         iou_token_out = hs[:, 0, :]
         mask_tokens_out = hs[:, 1 : (1 + self.num_mask_tokens), :]
 
+        # this is the lightly highlighted part in figure 14 of the paper.
         # Upscale mask embeddings and predict masks using the mask tokens
         src = src.transpose(1, 2).view(b, c, h, w)
         upscaled_embedding = self.output_upscaling(src)
+        # make multiple mask predcitions to handle ambiguous shape.
         hyper_in_list: List[torch.Tensor] = []
         for i in range(self.num_mask_tokens):
             hyper_in_list.append(self.output_hypernetworks_mlps[i](mask_tokens_out[:, i, :]))
